@@ -1,0 +1,15 @@
+[project]
+name = "optimize-test"
+version = "0.1.0"
+description = "GEPA optimization of RLM solver for DABench data analysis tasks"
+requires-python = ">=3.13"
+dependencies = [
+    "dspy>=2.6",
+    "gepa",
+    "pandas",
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "rich",
+    "pyarrow>=23.0.1",
+]

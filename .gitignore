@@ -1,0 +1,5 @@
+data/tables/
+__pycache__/
+runs/
+.venv/
+eval_results/
