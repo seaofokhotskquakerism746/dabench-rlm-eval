@@ -29,9 +29,11 @@ Both models use identical solver code. The solver defines a single DSPy signatur
 
 ```bash
 uv sync
-uv pip install -e /path/to/dspy  # DSPy with RLM support
+uv pip install -e "dspy @ git+https://github.com/kmad/dspy.git@sandbox-serializable"
 ./setup_pyodide_packages.sh      # download sklearn/scipy for the RLM sandbox
 ```
+
+This project requires the [`sandbox-serializable`](https://github.com/kmad/dspy/tree/sandbox-serializable) branch of DSPy, which adds the `SandboxSerializable` protocol and DataFrame support for RLMs. This will be merged into upstream DSPy -- until then, install from the fork as shown above.
 
 The RLM sandbox runs Python inside Pyodide/WASM via Deno. The npm Pyodide package only ships core wheels. `setup_pyodide_packages.sh` downloads sklearn, scipy, and dependencies into the local Deno cache so they're available to the sandbox.
 
