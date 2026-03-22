@@ -13,17 +13,21 @@ Usage:
     # Medium run (all tasks, 50 evaluations)
     python optimize_rlm_prompt.py --max-metric-calls 50
 
-    # Full run (all tasks, 200 evaluations)
-    python optimize_rlm_prompt.py --max-metric-calls 200
+    # Full run with parallelism
+    python optimize_rlm_prompt.py --max-metric-calls 200 -p 4
 """
 
 import argparse
 import time
 import traceback
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 import dspy
-import gepa.optimize_anything as oa
+from gepa import EvaluationBatch
+from gepa.api import optimize
 
 from dabench import load_questions, get_csv_path, score_response, split_train_val
 from dataframe import DataFrame
@@ -66,8 +70,10 @@ Available:
 
 IMPORTANT: This is ITERATIVE. Each code block executes, you see the output, then decide next steps.
 
+IMPORTANT: When you need a library (sklearn, scipy, etc.), import it at the TOP LEVEL of your code block — never inside try/except. The sandbox auto-installs packages when it sees top-level imports.
+
 Workflow:
-1. EXPLORE - Inspect the DataFrame. Print data.head(), data.columns, data.dtypes, data.shape.
+1. EXPLORE - Inspect the DataFrame. Print data.head(), data.columns, data.dtypes, data.shape. Import any libraries you'll need (sklearn, scipy, etc.) at the top level.
 2. UNDERSTAND - Read the question and constraints carefully. Identify which columns matter.
 3. COMPUTE - Write code to answer the question step by step. Print intermediate results.
 4. FORMAT - Format your answer exactly as specified in the format_spec using @field[value] notation.
@@ -126,88 +132,171 @@ def run_task(question: str, constraints: str, format_spec: str, csv_path: str, v
             constraints=constraints,
             format_spec=format_spec,
         )
-        return str(result.answer).strip()
+        answer = str(result.answer).strip()
+        iterations = len(result.trajectory) if hasattr(result, 'trajectory') else None
+        return {"answer": answer, "iterations": iterations}
     finally:
         rlm_module.ACTION_INSTRUCTIONS_TEMPLATE = original
 '''
 
 
 # ---------------------------------------------------------------------------
-# Evaluator
+# Types for our adapter
 # ---------------------------------------------------------------------------
 
-def make_evaluator():
-    """Create a GEPA evaluator that exec()s candidate code and runs it on a task."""
+# DataInst: a DABench question dict
+# Trajectory: per-example trace dict (for reflection)
+# RolloutOutput: per-example output dict
 
-    def evaluate(candidate: str, example: dict) -> tuple[float, dict]:
-        q = example
-        qid = q["id"]
-        level = q["level"]
-        csv_path = str(get_csv_path(q["file_name"]))
+def _eval_single(candidate_code: str, q: dict) -> dict:
+    """Run candidate solver on a single question. Thread-safe (fresh exec per call)."""
+    qid = q["id"]
+    level = q["level"]
+    csv_path = str(get_csv_path(q["file_name"]))
 
-        start = time.time()
-        response = ""
-        error = None
-        tb = None
+    start = time.time()
+    response = ""
+    iterations = None
+    error = None
+    tb = None
 
-        try:
-            ns = {"dspy": dspy, "DataFrame": DataFrame, "__builtins__": __builtins__}
-            exec(compile(candidate, "<candidate>", "exec"), ns)
+    try:
+        ns = {"dspy": dspy, "DataFrame": DataFrame, "__builtins__": __builtins__}
+        exec(compile(candidate_code, "<candidate>", "exec"), ns)
 
-            if "run_task" not in ns:
-                raise RuntimeError("Candidate must define run_task()")
+        if "run_task" not in ns:
+            raise RuntimeError("Candidate must define run_task()")
 
-            response = ns["run_task"](
-                question=q["question"],
-                constraints=q["constraints"],
-                format_spec=q["format"],
-                csv_path=csv_path,
-            )
-            if response is None:
-                response = ""
-            response = str(response).strip()
-        except Exception as e:
-            error = str(e)
-            tb = traceback.format_exc()
-
-        elapsed = round(time.time() - start, 1)
-
-        if error:
-            score, details = 0.0, {"error": error}
+        raw = ns["run_task"](
+            question=q["question"],
+            constraints=q["constraints"],
+            format_spec=q["format"],
+            csv_path=csv_path,
+        )
+        if isinstance(raw, dict):
+            response = str(raw.get("answer", "")).strip()
+            iterations = raw.get("iterations")
         else:
-            score, details = score_response(response, q["answers"])
+            response = str(raw).strip() if raw else ""
+    except Exception as e:
+        error = str(e)
+        tb = traceback.format_exc()
 
-        is_correct = details.get("all_correct", False)
+    elapsed = round(time.time() - start, 1)
 
-        side_info = {
-            "question_id": str(qid),
-            "level": level,
-            "question": q["question"][:300],
-            "constraints": q["constraints"][:200],
-            "format_spec": q["format"][:150],
-            "csv_file": q["file_name"],
-            "expected": str({a[0]: a[1] for a in q["answers"]})[:150],
-            "response": response[:200],
-            "is_correct": str(is_correct),
-            "score": str(score),
-            "elapsed_seconds": str(elapsed),
-        }
-        if error:
-            side_info["error"] = error[:500]
-        if tb:
-            side_info["traceback"] = tb[-1000:]
+    if error:
+        score, details = 0.0, {"error": error}
+    else:
+        score, details = score_response(response, q["answers"])
 
-        oa.log(f"Q{qid} ({level}): {'CORRECT' if is_correct else 'WRONG'} (score={score:.0%})")
-        oa.log(f"  Q: {q['question'][:150]}")
-        oa.log(f"  Expected:  {side_info['expected']}")
-        oa.log(f"  Response:  {response[:100]}")
-        if error:
-            oa.log(f"  Error: {error[:200]}")
-        oa.log(f"  Time: {elapsed}s")
+    is_correct = details.get("all_correct", False)
+    expected = str({a[0]: a[1] for a in q["answers"]})[:150]
 
-        return score, side_info
+    iter_str = f", {iterations} iters" if iterations is not None else ""
+    print(f"  Q{qid} ({level}): {'CORRECT' if is_correct else 'WRONG'} (score={score:.0%}{iter_str}) - {elapsed}s")
 
-    return evaluate
+    return {
+        "qid": qid,
+        "level": level,
+        "score": score,
+        "is_correct": is_correct,
+        "response": response,
+        "expected": expected,
+        "iterations": iterations,
+        "elapsed": elapsed,
+        "error": error,
+        "traceback": tb,
+        "question": q["question"],
+        "constraints": q["constraints"],
+        "format_spec": q["format"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Custom GEPA Adapter with parallel evaluation
+# ---------------------------------------------------------------------------
+
+class RLMAdapter:
+    """GEPA adapter that exec()s candidate Python code and runs RLM on DABench tasks."""
+
+    # Let GEPA use its default instruction proposal (reflection LM proposes new code)
+    propose_new_texts = None
+
+    def __init__(self, parallel: int = 1):
+        self.parallel = parallel
+
+    def evaluate(
+        self,
+        batch: list[dict],
+        candidate: dict[str, str],
+        capture_traces: bool = False,
+    ) -> EvaluationBatch:
+        candidate_code = next(iter(candidate.values()))
+
+        if self.parallel <= 1:
+            results = [_eval_single(candidate_code, q) for q in batch]
+        else:
+            results = [None] * len(batch)
+            with ThreadPoolExecutor(max_workers=self.parallel) as executor:
+                futures = {
+                    executor.submit(_eval_single, candidate_code, q): i
+                    for i, q in enumerate(batch)
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    results[idx] = future.result()
+
+        scores = [r["score"] for r in results]
+        outputs = [{"response": r["response"], "is_correct": r["is_correct"]} for r in results]
+        trajectories = results if capture_traces else None
+
+        return EvaluationBatch(
+            outputs=outputs,
+            scores=scores,
+            trajectories=trajectories,
+        )
+
+    def make_reflective_dataset(
+        self,
+        candidate: dict[str, str],
+        eval_batch: EvaluationBatch,
+        components_to_update: list[str],
+    ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
+        """Build reflection dataset from evaluation traces."""
+        traces = eval_batch.trajectories or []
+        component_name = components_to_update[0] if components_to_update else "solver"
+
+        records = []
+        for trace in traces:
+            feedback_parts = []
+            if trace["is_correct"]:
+                feedback_parts.append(f"CORRECT (score={trace['score']:.0%})")
+            else:
+                feedback_parts.append(f"WRONG (score={trace['score']:.0%})")
+                feedback_parts.append(f"Expected: {trace['expected']}")
+                feedback_parts.append(f"Got: {trace['response'][:200]}")
+            if trace.get("error"):
+                feedback_parts.append(f"Error: {trace['error'][:300]}")
+            if trace.get("traceback"):
+                feedback_parts.append(f"Traceback: {trace['traceback'][-500:]}")
+            if trace.get("iterations") is not None:
+                feedback_parts.append(f"Iterations: {trace['iterations']}")
+            feedback_parts.append(f"Time: {trace['elapsed']}s")
+
+            records.append({
+                "Inputs": {
+                    "question": trace["question"][:300],
+                    "constraints": trace["constraints"][:200],
+                    "format_spec": trace["format_spec"][:150],
+                    "level": trace["level"],
+                },
+                "Generated Outputs": {
+                    "response": trace["response"][:200],
+                },
+                "Feedback": "\n".join(feedback_parts),
+            })
+
+        return {component_name: records}
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +312,7 @@ def main():
     parser.add_argument("--max-metric-calls", type=int, default=50)
     parser.add_argument("--num-tasks", type=int, default=None)
     parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--parallel", "-p", type=int, default=1, help="Parallel eval workers")
     parser.add_argument("--no-valset", action="store_true",
                         help="Use multi-task search (no val set) instead of generalization mode")
     args = parser.parse_args()
@@ -234,6 +324,7 @@ def main():
     print(f"  Reflection LM:    {args.reflection_lm or '(GEPA default)'}")
     print(f"  Max metric calls: {args.max_metric_calls}")
     print(f"  Tasks:            {args.num_tasks or 'all 257'}")
+    print(f"  Parallel:         {args.parallel}")
     print()
 
     dspy.configure(lm=dspy.LM(args.model))
@@ -269,74 +360,23 @@ def main():
     print(f"Seed code: {len(SEED_CODE)} chars")
     print()
 
-    evaluator = make_evaluator()
-
+    adapter = RLMAdapter(parallel=args.parallel)
     run_dir = args.run_dir or str(Path("runs") / f"dabench_opt_{int(time.time())}")
-    config = oa.GEPAConfig(
-        engine=oa.EngineConfig(
-            max_metric_calls=args.max_metric_calls,
-            parallel=False,
-            capture_stdio=True,
-            display_progress_bar=True,
-            run_dir=run_dir,
-        ),
-        reflection=oa.ReflectionConfig(
-            reflection_lm=args.reflection_lm,
-            reflection_minibatch_size=3,
-        ),
-    )
 
     print("Starting GEPA optimization...")
     print(f"  Budget: {args.max_metric_calls} evaluations")
     print()
 
-    result = oa.optimize_anything(
-        seed_candidate=SEED_CODE,
-        evaluator=evaluator,
-        dataset=dataset,
+    result = optimize(
+        seed_candidate={"solver": SEED_CODE},
+        trainset=dataset,
         valset=valset,
-        objective=(
-            "Optimize the Python code that runs DSPy's RLM (Recursive Language Model) "
-            "to maximize accuracy on DABench data analysis tasks. "
-            "Each task gives the RLM a CSV file and a question; it must write Python "
-            "code to analyze the data and produce an answer in @field[value] format. "
-            "Tasks span summary statistics, correlation analysis, distribution analysis, "
-            "feature engineering, outlier detection, and machine learning. "
-            "The code defines: (1) ACTION_INSTRUCTIONS_TEMPLATE — the prompt for the "
-            "Python REPL, (2) DataAnalysisTask — the signature, (3) run_task() — "
-            "which can add custom tools, pre/post-processing, or retry logic."
-        ),
-        background=(
-            "The candidate is a Python module that gets exec()'d. It has `dspy` as a "
-            "global. It MUST define run_task(question, constraints, format_spec, csv_path) -> str. "
-            "csv_path points to a CSV file. The answer must use @field[value] format. "
-            "\n\n"
-            "The ACTION_INSTRUCTIONS_TEMPLATE has format placeholders "
-            "{inputs}, {output_fields}, {final_output_names}, {max_llm_calls} "
-            "that are filled by dspy.RLM at runtime — they MUST stay in the template. "
-            "\n\n"
-            "Task categories and key challenges:\n"
-            "- Summary Statistics: mean, median, std, min, max — watch precision/rounding\n"
-            "- Correlation Analysis: Pearson r — handle missing values, feature engineering\n"
-            "- Distribution Analysis: skewness, kurtosis, normality tests\n"
-            "- Feature Engineering: create derived columns before analysis\n"
-            "- Outlier Detection: IQR, z-score methods\n"
-            "- Machine Learning: train/test split, sklearn models, accuracy metrics\n"
-            "\n"
-            "Things to evolve:\n"
-            "- The prompt: add guidance for common pandas patterns, sklearn workflows\n"
-            "- Custom tools: helpers for loading CSV, computing stats, formatting answers\n"
-            "- Pre-processing: parse question type to choose strategy\n"
-            "- Post-processing: extract and validate @field[value] format\n"
-            "\n"
-            "Common failure modes:\n"
-            "- Wrong rounding (most answers need 2 decimal places)\n"
-            "- Missing @field[value] format in output\n"
-            "- Not handling NaN values before computation\n"
-            "- Wrong sklearn model or preprocessing\n"
-            "- Not following constraints (e.g., specific random_state, encoding method)"
-        ),
-        config=config,
+        adapter=adapter,
+        reflection_lm=args.reflection_lm,
+        reflection_minibatch_size=3,
+        max_metric_calls=args.max_metric_calls,
+        display_progress_bar=True,
+        run_dir=run_dir,
     )
 
     print("\n" + "=" * 60)
@@ -344,10 +384,7 @@ def main():
     print("=" * 60)
 
     best = result.best_candidate
-    if isinstance(best, dict):
-        best_code = next(iter(best.values()))
-    else:
-        best_code = str(best)
+    best_code = best.get("solver", next(iter(best.values())))
 
     print(f"\nBest candidate ({len(best_code)} chars):")
     print("-" * 40)
@@ -361,7 +398,7 @@ def main():
     print(f"\nBest solver saved to: {output_path}")
     print(f"Run directory: {run_dir}")
     print("\nTo evaluate:")
-    print("  python eval_with_solver.py --solver best_solver.py")
+    print("  uv run python eval_with_solver.py --solver best_solver.py")
 
 
 if __name__ == "__main__":

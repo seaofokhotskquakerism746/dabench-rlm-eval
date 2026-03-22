@@ -3,12 +3,14 @@
 Usage:
     python eval_with_solver.py --solver best_solver.py
     python eval_with_solver.py --solver best_solver.py --level easy --num-tasks 5
+    python eval_with_solver.py --parallel 3 --num-tasks 30
     python eval_with_solver.py  # runs baseline seed code
 """
 
 import argparse
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -22,28 +24,101 @@ from dataframe import DataFrame
 console = Console()
 
 
-def load_solver(solver_path: str | None):
-    """Load a solver module and return its run_task function."""
+def load_solver_code(solver_path: str | None) -> str:
+    """Load solver source code."""
     if solver_path:
-        code = Path(solver_path).read_text()
-    else:
-        # Extract SEED_CODE without importing optimize_rlm_prompt (avoids gepa dependency)
-        import ast
-        tree = ast.parse(Path("optimize_rlm_prompt.py").read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "SEED_CODE":
-                        code = ast.literal_eval(node.value)
-                        break
-        if not code:
-            raise RuntimeError("Could not extract SEED_CODE from optimize_rlm_prompt.py")
+        return Path(solver_path).read_text()
+    # Extract SEED_CODE without importing optimize_rlm_prompt (avoids gepa dependency)
+    import ast
+    tree = ast.parse(Path("optimize_rlm_prompt.py").read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "SEED_CODE":
+                    return ast.literal_eval(node.value)
+    raise RuntimeError("Could not extract SEED_CODE from optimize_rlm_prompt.py")
 
+
+def make_run_task(code: str):
+    """Compile solver code and return its run_task function."""
     ns = {"dspy": dspy, "DataFrame": DataFrame, "__builtins__": __builtins__}
-    exec(compile(code, solver_path or "<seed>", "exec"), ns)
+    exec(compile(code, "<solver>", "exec"), ns)
     if "run_task" not in ns:
         raise RuntimeError("Solver must define run_task()")
     return ns["run_task"]
+
+
+def run_single(q: dict, code: str, verbose: bool) -> dict:
+    """Run a single question. Each call gets its own exec'd solver (thread-safe)."""
+    run_task = make_run_task(code)
+    qid = q["id"]
+    level = q["level"]
+    csv_path = str(get_csv_path(q["file_name"]))
+
+    start = time.time()
+    error = None
+    response = ""
+
+    iterations = None
+    try:
+        raw = run_task(
+            question=q["question"],
+            constraints=q["constraints"],
+            format_spec=q["format"],
+            csv_path=csv_path,
+            verbose=verbose,
+        )
+        if isinstance(raw, dict):
+            response = str(raw.get("answer", "")).strip()
+            iterations = raw.get("iterations")
+        else:
+            response = str(raw).strip() if raw else ""
+    except Exception as e:
+        error = str(e)
+
+    elapsed = round(time.time() - start, 1)
+
+    if error:
+        score, details = 0.0, {"error": error}
+    else:
+        score, details = score_response(response, q["answers"])
+
+    is_correct = details.get("all_correct", False)
+    expected = {a[0]: a[1] for a in q["answers"]}
+
+    return {
+        "id": qid, "level": level, "score": score,
+        "is_correct": is_correct, "response": response,
+        "expected": expected, "elapsed": elapsed, "error": error,
+        "iterations": iterations, "question": q["question"][:70],
+    }
+
+
+def print_result(result: dict, idx: int, total: int):
+    qid = result["id"]
+    level = result["level"]
+    is_correct = result["is_correct"]
+    error = result["error"]
+    score = result["score"]
+    elapsed = result["elapsed"]
+    response = result["response"]
+    expected = result["expected"]
+
+    if is_correct:
+        status = "[bold green]CORRECT[/bold green]"
+    elif error:
+        status = "[bold red]ERROR[/bold red]"
+    else:
+        status = "[bold yellow]WRONG[/bold yellow]"
+
+    iterations = result.get("iterations")
+    iter_str = f", {iterations} iters" if iterations is not None else ""
+
+    console.print(f"\n[bold][{idx}/{total}][/bold] Q{qid} ({level}): {result['question']}...")
+    console.print(f"  {status} ({score:.0%}) - {elapsed}s{iter_str}")
+    console.print(f"  [dim]Expected:[/dim]  {expected}")
+    pred_color = "green" if is_correct else ("red" if error else "yellow")
+    console.print(f"  [dim]Response:[/dim] [{pred_color}]{response[:120]}[/{pred_color}]")
 
 
 def main():
@@ -53,6 +128,7 @@ def main():
     parser.add_argument("--level", choices=["easy", "medium", "hard"], default=None)
     parser.add_argument("--num-tasks", type=int, default=None)
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose RLM tracing")
+    parser.add_argument("--parallel", "-p", type=int, default=1, help="Number of parallel workers (default: 1)")
     args = parser.parse_args()
 
     dspy.configure(lm=dspy.LM(args.model))
@@ -60,8 +136,10 @@ def main():
     solver_label = args.solver or "baseline"
     console.print(f"[bold]Solver:[/bold] {solver_label}")
     console.print(f"[bold]Model:[/bold]  {args.model}")
+    if args.parallel > 1:
+        console.print(f"[bold]Parallel:[/bold] {args.parallel} workers")
 
-    run_task = load_solver(args.solver)
+    code = load_solver_code(args.solver)
     questions = load_questions()
 
     if args.level:
@@ -69,58 +147,29 @@ def main():
     if args.num_tasks:
         questions = questions[: args.num_tasks]
 
-    console.rule(f"Running {len(questions)} tasks")
+    total = len(questions)
+    console.rule(f"Running {total} tasks")
     results = []
 
-    for i, q in enumerate(questions, 1):
-        qid = q["id"]
-        level = q["level"]
-        console.print(f"\n[bold][{i}/{len(questions)}][/bold] Q{qid} ({level}): {q['question'][:70]}...")
-
-        csv_path = str(get_csv_path(q["file_name"]))
-        start = time.time()
-        error = None
-        response = ""
-
-        try:
-            response = run_task(
-                question=q["question"],
-                constraints=q["constraints"],
-                format_spec=q["format"],
-                csv_path=csv_path,
-                verbose=args.verbose,
-            )
-            response = str(response).strip() if response else ""
-        except Exception as e:
-            error = str(e)
-
-        elapsed = round(time.time() - start, 1)
-
-        if error:
-            score, details = 0.0, {"error": error}
-        else:
-            score, details = score_response(response, q["answers"])
-
-        is_correct = details.get("all_correct", False)
-
-        if is_correct:
-            status = "[bold green]CORRECT[/bold green]"
-        elif error:
-            status = "[bold red]ERROR[/bold red]"
-        else:
-            status = "[bold yellow]WRONG[/bold yellow]"
-
-        console.print(f"  {status} ({score:.0%}) - {elapsed}s")
-        expected = {a[0]: a[1] for a in q["answers"]}
-        console.print(f"  [dim]Expected:[/dim]  {expected}")
-        pred_color = "green" if is_correct else ("red" if error else "yellow")
-        console.print(f"  [dim]Response:[/dim] [{pred_color}]{response[:120]}[/{pred_color}]")
-
-        results.append({
-            "id": qid, "level": level, "score": score,
-            "is_correct": is_correct, "response": response,
-            "expected": expected, "elapsed": elapsed, "error": error,
-        })
+    if args.parallel <= 1:
+        # Sequential mode
+        for i, q in enumerate(questions, 1):
+            result = run_single(q, code, args.verbose)
+            print_result(result, i, total)
+            results.append(result)
+    else:
+        # Parallel mode
+        completed = 0
+        with ThreadPoolExecutor(max_workers=args.parallel) as executor:
+            futures = {
+                executor.submit(run_single, q, code, args.verbose): q
+                for q in questions
+            }
+            for future in as_completed(futures):
+                completed += 1
+                result = future.result()
+                print_result(result, completed, total)
+                results.append(result)
 
     # Summary
     scored = [r for r in results if r["error"] is None]
@@ -148,6 +197,9 @@ def main():
     table.add_row("TOTAL", f"{total_correct}/{len(scored)}", f"[bold {color}]{total_acc:.1%}[/bold {color}]", end_section=True)
     table.add_row("Errors", str(len(results) - len(scored)), "")
     table.add_row("Avg time", f"{sum(r['elapsed'] for r in results) / len(results):.1f}s", "")
+    iters = [r["iterations"] for r in results if r.get("iterations") is not None]
+    if iters:
+        table.add_row("Avg iters", f"{sum(iters) / len(iters):.1f}", "")
 
     console.print()
     console.print(table)
@@ -157,7 +209,7 @@ def main():
     out_dir = Path("eval_results") / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "results.json", "w") as f:
-        json.dump({"solver": solver_label, "results": results}, f, indent=2)
+        json.dump({"solver": solver_label, "model": args.model, "results": results}, f, indent=2)
     console.print(f"\nResults saved to: {out_dir}")
 
 
